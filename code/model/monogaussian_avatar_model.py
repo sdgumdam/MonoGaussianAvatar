@@ -90,11 +90,12 @@ class MonogaussianAvatar(nn.Module):
             sh_degree=3,
             campos=camera_center,
             prefiltered=False,
-            debug=False
+            debug=False,
+            antialiasing= True  
         )
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-        render_image, radii = rasterizer(
+        render_image, radii ,invdepths= rasterizer(
             means3D=xyz,
             means2D=screenspace_points,
             shs=None,
