@@ -12,11 +12,12 @@ import wandb
 from functools import partial
 from model.monogaussian_avatar_model import MonogaussianAvatar
 from model.loss import Loss
+from torch.nn import DataParallel
 import trimesh
 print = partial(print, flush=True)
 
 
-class TrainRunner():
+class TrainRunner_parallel():
     def __init__(self, **kwargs):
         torch.set_default_dtype(torch.float32)
         torch.set_num_threads(1)
@@ -107,13 +108,13 @@ class TrainRunner():
                                         use_background=self.use_background)
         self._init_dataloader()
         if torch.cuda.is_available():
-            self.model.cuda()
+            self.model = DataParallel(self.model).cuda()
 
         self.loss = Loss(**self.conf.get_config('loss'), var_expression=self.train_dataset.var_expression)
 
         self.lr = self.conf.get_float('train.learning_rate')
         self.optimizer = torch.optim.Adam([
-            {'params': list(self.model.parameters())},
+            {'params': list(self.model.module.parameters())},
         ], lr=self.lr)
         self.sched_milestones = self.conf.get_list('train.sched_milestones', default=[])
         self.sched_factor = self.conf.get_float('train.sched_factor', default=0.0)
@@ -124,11 +125,11 @@ class TrainRunner():
             num_training_frames = len(self.train_dataset)
             param = []
             if self.optimize_expression:
-                init_expression = torch.cat((self.train_dataset.data["expressions"], torch.randn(self.train_dataset.data["expressions"].shape[0], max(self.model.deformer_network.num_exp - 50, 0)).float()), dim=1)
+                init_expression = torch.cat((self.train_dataset.data["expressions"], torch.randn(self.train_dataset.data["expressions"].shape[0], max(self.model.module.deformer_network.num_exp - 50, 0)).float()), dim=1)
                 # print(11111)
                 # print(init_expression.size())
                 # print(num_training_frames)
-                self.expression = torch.nn.Embedding(num_training_frames, self.model.deformer_network.num_exp, _weight=init_expression, sparse=True).cuda()
+                self.expression = torch.nn.Embedding(num_training_frames, self.model.module.deformer_network.num_exp, _weight=init_expression, sparse=True).cuda()
                 param += list(self.expression.parameters())
 
             if self.optimize_pose:
@@ -151,15 +152,15 @@ class TrainRunner():
                 self.batch_size = batch_size
                 self._init_dataloader()
             # self.model.pc.init(n_points, con_points)
-            self.model.pc.init(n_points)
-            self.model.pc = self.model.pc.cuda()
+            self.model.module.pc.init(n_points)
+            self.model.module.pc = self.model.module.pc.cuda()
 
-            self.model.load_state_dict(saved_model_state["model_state_dict"], strict=False)
+            self.model.module.load_state_dict(saved_model_state["model_state_dict"], strict=False)
 
-            self.model.radius = saved_model_state['radius']
+            self.model.module.radius = saved_model_state['radius']
 
             self.optimizer = torch.optim.Adam([
-                {'params': list(self.model.parameters())},
+                {'params': list(self.model.module.parameters())},
             ], lr=self.lr)
 
             data = torch.load(
@@ -194,13 +195,12 @@ class TrainRunner():
         self.img_res = self.plot_dataset.img_res
         self.plot_freq = self.conf.get_int('train.plot_freq')
         self.save_freq = self.conf.get_int('train.save_freq', default=1)
-        
-        #风格化调整阶段，不使用lbsweight计算loss
-        # self.GT_lbs_milestones = self.conf.get_list('train.GT_lbs_milestones', default=[])
-        # self.GT_lbs_factor = self.conf.get_float('train.GT_lbs_factor', default=0.5)
-        # for acc in self.GT_lbs_milestones:
-        #     if self.start_epoch > acc:
-        #         self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
+
+        self.GT_lbs_milestones = self.conf.get_list('train.GT_lbs_milestones', default=[])
+        self.GT_lbs_factor = self.conf.get_float('train.GT_lbs_factor', default=0.5)
+        for acc in self.GT_lbs_milestones:
+            if self.start_epoch > acc:
+                self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
         # if len(self.GT_lbs_milestones) > 0 and self.start_epoch >= self.GT_lbs_milestones[-1]:
         #    self.loss.lbs_weight = 0.
 
@@ -221,8 +221,8 @@ class TrainRunner():
     def save_checkpoints(self, epoch, only_latest=False):
         if not only_latest:
             torch.save(
-                {"epoch": epoch, "radius": self.model.radius,
-                 "model_state_dict": self.model.state_dict()},
+                {"epoch": epoch, "radius": self.model.module.radius,
+                 "model_state_dict": self.model.module.state_dict()},
                 os.path.join(self.checkpoints_path, self.model_params_subdir, str(epoch) + ".pth"))
             torch.save(
                 {"epoch": epoch, "optimizer_state_dict": self.optimizer.state_dict()},
@@ -232,8 +232,8 @@ class TrainRunner():
                 os.path.join(self.checkpoints_path, self.scheduler_params_subdir, str(epoch) + ".pth"))
 
         torch.save(
-            {"epoch": epoch, "radius": self.model.radius,
-                 "model_state_dict": self.model.state_dict()},
+            {"epoch": epoch, "radius": self.model.module.radius,
+                 "model_state_dict": self.model.module.state_dict()},
             os.path.join(self.checkpoints_path, self.model_params_subdir, "latest.pth"))
         torch.save(
             {"epoch": epoch, "optimizer_state_dict": self.optimizer.state_dict()},
@@ -263,9 +263,9 @@ class TrainRunner():
             torch.save(dict_to_save, os.path.join(self.checkpoints_path, self.input_params_subdir, "latest.pth"))
 
     def upsample_points(self, epoch):
-        current_radius = self.model.radius
+        current_radius = self.model.module.radius
         # current_prune_thresh_factor = self.model.prune_thresh_factor
-        points = self.model.pc.points.data
+        points = self.model.module.pc.points.data
         num_p = points.shape[0]
         if epoch <= 100:
             noise = (torch.rand(*points.shape).cuda() - 0.5) * current_radius
@@ -281,53 +281,53 @@ class TrainRunner():
         # print(points.size())
         # print(new_points.size())
         if epoch < 5:
-            self.model.pc.upsample_400_points(new_points)
+            self.model.module.pc.upsample_400_points(new_points)
         elif 5 <= epoch < 10:
-            self.model.pc.upsample_800_points(new_points)
+            self.model.module.pc.upsample_800_points(new_points)
         elif 10 <= epoch < 15:
-            self.model.pc.upsample_1600_points(new_points)
+            self.model.module.pc.upsample_1600_points(new_points)
         elif 15 <= epoch < 20:
-            self.model.pc.upsample_3200_points(new_points)
+            self.model.module.pc.upsample_3200_points(new_points)
         elif 20 <= epoch < 25:
-            self.model.pc.upsample_6400_points(new_points)
+            self.model.module.pc.upsample_6400_points(new_points)
         elif 25 <= epoch < 30:
-            self.model.pc.upsample_10000_points(new_points)
+            self.model.module.pc.upsample_10000_points(new_points)
         elif 30 <= epoch < 40:
-            self.model.pc.upsample_20000_points(new_points)
+            self.model.module.pc.upsample_20000_points(new_points)
         elif 40 <= epoch < 50:
-            self.model.pc.upsample_40000_points(new_points)
+            self.model.module.pc.upsample_40000_points(new_points)
         elif 50 <= epoch < 60:
-            self.model.pc.upsample_80000_points(new_points)
+            self.model.module.pc.upsample_80000_points(new_points)
         elif epoch >= 60:
-            self.model.pc.upsample_100000_points(new_points)
+            self.model.module.pc.upsample_100000_points(new_points)
         if epoch == 5:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         elif epoch == 10:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         elif epoch == 15:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         elif epoch == 20:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         elif epoch == 25:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         elif epoch == 30:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         elif epoch == 40:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         elif epoch == 50:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         elif epoch == 60:
-            self.model.radius = 0.9 * current_radius
+            self.model.module.radius = 0.9 * current_radius
         elif epoch > 60 and epoch % 5 == 0:
-            self.model.radius = 0.75 * current_radius
+            self.model.module.radius = 0.75 * current_radius
         if epoch >= 100:
-            print("old radius: {}, new radius: {}, sample radius: {}".format(current_radius, self.model.radius, 0.004))
+            print("old radius: {}, new radius: {}, sample radius: {}".format(current_radius, self.model.module.radius, 0.004))
         else:
-            print("old radius: {}, new radius: {}, sample radius: {}".format(current_radius, self.model.radius, current_radius))
+            print("old radius: {}, new radius: {}, sample radius: {}".format(current_radius, self.model.module.radius, current_radius))
         print("old points: {}, new points: {}".format(num_p,
-                                                      self.model.pc.points.data.shape[0]))
+                                                      self.model.module.pc.points.data.shape[0]))
         self.optimizer = torch.optim.Adam([
-            {'params': list(self.model.parameters())},
+            {'params': list(self.model.module.parameters())},
         ], lr=self.lr)
 
     def file_backup(self):
@@ -352,9 +352,8 @@ class TrainRunner():
         end_time = torch.cuda.Event(enable_timing=True)
 
         for epoch in range(self.start_epoch, self.nepochs + 1):
-            # 风格化调整阶段，不使用lbs weight计算loss
-            # if epoch in self.GT_lbs_milestones:
-            #     self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
+            if epoch in self.GT_lbs_milestones:
+                self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
 
             if epoch % (self.save_freq * 5) == 0 and epoch != self.start_epoch:
                 self.save_checkpoints(epoch)
@@ -407,7 +406,7 @@ class TrainRunner():
 
                     if batch_index == 0:
                         # pc
-                        vertices = self.model.pc.points.data
+                        vertices = self.model.module.pc.points.data
                         vertices = vertices.detach().cpu().numpy()
                         # print(vertices)
                         mesh_colored = trimesh.points.PointCloud(vertices=vertices)
@@ -437,16 +436,16 @@ class TrainRunner():
 
             # Prunning
             if epoch != self.start_epoch and epoch % self.upsample_freq == 0:
-                self.model.pc.prune(self.model.visible_points)
+                self.model.module.pc.prune(self.model.module.visible_points)
                 self.optimizer = torch.optim.Adam([
-                    {'params': list(self.model.parameters())},
+                    {'params': list(self.model.module.parameters())},
                 ], lr=self.lr)
             # Upsampling
             if epoch % self.upsample_freq == 0:
                 if epoch != 0:
                     self.upsample_points(epoch)
                     batch_size = min(
-                        int(self.conf.get_int('train.max_points_training') / (self.model.pc.points.shape[0])),
+                        int(self.conf.get_int('train.max_points_training') / (self.model.module.pc.points.shape[0])),
                         self.max_batch)
                     if batch_size != self.batch_size:
                         self.batch_size = batch_size
@@ -459,7 +458,7 @@ class TrainRunner():
                         self.n_batches = len(self.train_dataloader)
 
             # re-init visible point tensor each epoch
-            self.model.visible_points = torch.zeros(self.model.pc.points.shape[0]).bool().cuda()
+            self.model.module.visible_points = torch.zeros(self.model.module.pc.points.shape[0]).bool().cuda()
 
             for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
                 for k, v in model_input.items():
@@ -502,7 +501,7 @@ class TrainRunner():
                     else:
                         acc_loss[k].append(v)
 
-                acc_loss['visible_percentage'] = (torch.sum(self.model.visible_points)/self.model.pc.points.shape[0]).unsqueeze(0)
+                acc_loss['visible_percentage'] = (torch.sum(self.model.module.visible_points)/self.model.module.pc.points.shape[0]).unsqueeze(0)
                 if data_index % 50 == 0:
                     for k, v in acc_loss.items():
                         acc_loss[k] = sum(v) / len(v)
@@ -510,8 +509,8 @@ class TrainRunner():
                     for k, v in acc_loss.items():
                         print_str += '{}: {:.3g} '.format(k, v)
                     print(print_str)
-                    acc_loss['num_points'] = self.model.pc.points.shape[0]
-                    acc_loss['radius'] = self.model.radius
+                    acc_loss['num_points'] = self.model.module.pc.points.shape[0]
+                    acc_loss['radius'] = self.model.module.radius
 
                     acc_loss['lr'] = self.scheduler.get_last_lr()[0]
                     # # print batch size
@@ -524,7 +523,8 @@ class TrainRunner():
             torch.cuda.synchronize()
             wandb.log({"timing_epoch": start_time.elapsed_time(end_time)}, step=(epoch+1) * len(self.train_dataset))
             print("Epoch time: {} s".format(start_time.elapsed_time(end_time)/1000))
-        self.save_checkpoints(self.nepochs + 1)
+        if(self.nepochs+1 %10) == 0:
+            self.save_checkpoints(self.nepochs + 1)
 
 
 

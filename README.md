@@ -45,6 +45,7 @@ Uncompress and put into the experiment folder `./data/experiments`.
 ## Training
 ```
 python scripts/exp_runner.py --conf ./confs/subject1.conf [--is_continue]
+python scripts/exp_runner_style.py --conf ./confs/subject1_style.conf --is_continue
 ```
 ## Evaluation
 Set the *is_eval* flag for evaluation, optionally set *checkpoint* (if not, the latest checkpoint will be used) and *load_path* 

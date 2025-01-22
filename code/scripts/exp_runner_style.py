@@ -7,9 +7,9 @@ import argparse
 # os.system('ls')
 # abs_path=os.path.abspath(__file__)
 # print(abs_path)
-from scripts.train import TrainRunner
 from scripts.test import TestRunner
 from scripts.train_parallel import TrainRunner_parallel
+from scripts.train_style_geometry import TrainRunner
 
 
 if __name__ == '__main__':

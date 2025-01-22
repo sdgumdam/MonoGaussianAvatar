@@ -23,7 +23,7 @@ print_flushed = partial(print, flush=True)
 class MonogaussianAvatar(nn.Module):
     def __init__(self, conf, shape_params, img_res, canonical_expression, canonical_pose, use_background):
         super().__init__()
-        self.FLAMEServer = FLAME('./flame/FLAME2020/generic_model.pkl', './flame/FLAME2020/landmark_embedding.npy',
+        self.FLAMEServer = FLAME('./flame/FLAME2020/male_model.pkl', './flame/FLAME2020/landmark_embedding.npy',
                                  n_shape=100,
                                  n_exp=50,
                                  shape_params=shape_params,
@@ -35,7 +35,6 @@ class MonogaussianAvatar(nn.Module):
         self.prune_thresh = conf.get_float('prune_thresh', default=0.5)
         self.geometry_network = GeometryNetwork(**conf.get_config('geometry_network'))
         self.deformer_network = ForwardDeformer(FLAMEServer=self.FLAMEServer, **conf.get_config('deformer_network'))
-        self.rendering_network = RenderingNetwork(**conf.get_config('rendering_network'))
         self.gaussian_deformer_network = GaussianNetwork(**conf.get_config('gaussian_network'))
         self.ghostbone = self.deformer_network.ghostbone
         if self.ghostbone:

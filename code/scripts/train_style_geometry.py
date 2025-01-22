@@ -12,6 +12,7 @@ import wandb
 from functools import partial
 from model.monogaussian_avatar_model import MonogaussianAvatar
 from model.loss import Loss
+from model.loss_styleAdjust import Loss_styleAdjust
 import trimesh
 print = partial(print, flush=True)
 
@@ -109,7 +110,7 @@ class TrainRunner():
         if torch.cuda.is_available():
             self.model.cuda()
 
-        self.loss = Loss(**self.conf.get_config('loss'), var_expression=self.train_dataset.var_expression)
+        self.loss = Loss_styleAdjust(**self.conf.get_config('loss'), var_expression=self.train_dataset.var_expression)
 
         self.lr = self.conf.get_float('train.learning_rate')
         self.optimizer = torch.optim.Adam([
@@ -125,9 +126,7 @@ class TrainRunner():
             param = []
             if self.optimize_expression:
                 init_expression = torch.cat((self.train_dataset.data["expressions"], torch.randn(self.train_dataset.data["expressions"].shape[0], max(self.model.deformer_network.num_exp - 50, 0)).float()), dim=1)
-                # print(11111)
-                # print(init_expression.size())
-                # print(num_training_frames)
+                
                 self.expression = torch.nn.Embedding(num_training_frames, self.model.deformer_network.num_exp, _weight=init_expression, sparse=True).cuda()
                 param += list(self.expression.parameters())
 
@@ -144,13 +143,12 @@ class TrainRunner():
                 os.path.join(old_checkpnts_dir, 'ModelParameters', str(kwargs['checkpoint']) + ".pth"))
             self.start_epoch = saved_model_state['epoch']
             n_points = saved_model_state["model_state_dict"]['pc.points'].shape[0]
-            # n_points = con_points.shape[0]
-            # batch_size = min(int(self.conf.get_int('train.max_points_training') / n_points), self.max_batch)
+            
             batch_size = min(int(self.conf.get_int('train.max_points_training') / (n_points)), self.max_batch)
             if self.batch_size != batch_size:
                 self.batch_size = batch_size
                 self._init_dataloader()
-            # self.model.pc.init(n_points, con_points)
+           
             self.model.pc.init(n_points)
             self.model.pc = self.model.pc.cuda()
 
@@ -170,19 +168,32 @@ class TrainRunner():
                 data = torch.load(
                     os.path.join(old_checkpnts_dir, self.optimizer_inputs_subdir, str(kwargs['checkpoint']) + ".pth"))
                 try:
-                    self.optimizer_cam.load_state_dict(data["optimizer_cam_state_dict"])
-                except:
-                    print("input and camera optimizer parameter group doesn't match")
+                    optimizer_cam_state_dict = data["optimizer_cam_state_dict"]
+                    for param_group, self_param_group in zip(optimizer_cam_state_dict['param_groups'], self.optimizer_cam.param_groups):
+                        param_group['params'] = self_param_group['params']
+                    self.optimizer_cam.load_state_dict(optimizer_cam_state_dict)
+                except Exception as e:
+                    print(f"input and camera optimizer parameter group doesn't match:{e}")
                 data = torch.load(
                     os.path.join(old_checkpnts_dir, self.input_params_subdir, str(kwargs['checkpoint']) + ".pth"))
                 try:
                     if self.optimize_expression:
-                        self.expression.load_state_dict(data["expression_state_dict"])
+                        current_size = self.expression.weight.size()
+                        expression_state_dict = data["expression_state_dict"]
+                        expression_state_dict["weight"] = expression_state_dict["weight"][:current_size[0]]
+                        self.expression.load_state_dict(expression_state_dict)
                     if self.optimize_pose:
-                        self.flame_pose.load_state_dict(data["flame_pose_state_dict"])
-                        self.camera_pose.load_state_dict(data["camera_pose_state_dict"])
-                except:
-                    print("expression or pose parameter group doesn't match")
+                        current_size = self.flame_pose.weight.size()
+                        flame_pose_state_dict = data["flame_pose_state_dict"]
+                        flame_pose_state_dict["weight"] = flame_pose_state_dict["weight"][:current_size[0]]
+                        self.flame_pose.load_state_dict(flame_pose_state_dict)
+
+                        current_size = self.camera_pose.weight.size()
+                        camera_pose_state_dict = data["camera_pose_state_dict"]
+                        camera_pose_state_dict["weight"] = camera_pose_state_dict["weight"][:current_size[0]]
+                        self.camera_pose.load_state_dict(camera_pose_state_dict)
+                except Exception as e:
+                    print(f"Expression or pose parameter group doesn't match: {e}")
 
         self.train_dataloader = torch.utils.data.DataLoader(self.train_dataset,
                                                             batch_size=self.batch_size,
@@ -194,13 +205,12 @@ class TrainRunner():
         self.img_res = self.plot_dataset.img_res
         self.plot_freq = self.conf.get_int('train.plot_freq')
         self.save_freq = self.conf.get_int('train.save_freq', default=1)
-        
-        #风格化调整阶段，不使用lbsweight计算loss
-        # self.GT_lbs_milestones = self.conf.get_list('train.GT_lbs_milestones', default=[])
-        # self.GT_lbs_factor = self.conf.get_float('train.GT_lbs_factor', default=0.5)
-        # for acc in self.GT_lbs_milestones:
-        #     if self.start_epoch > acc:
-        #         self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
+
+        self.GT_lbs_milestones = self.conf.get_list('train.GT_lbs_milestones', default=[])
+        self.GT_lbs_factor = self.conf.get_float('train.GT_lbs_factor', default=0.5)
+        for acc in self.GT_lbs_milestones:
+            if self.start_epoch > acc:
+                self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
         # if len(self.GT_lbs_milestones) > 0 and self.start_epoch >= self.GT_lbs_milestones[-1]:
         #    self.loss.lbs_weight = 0.
 
@@ -352,9 +362,8 @@ class TrainRunner():
         end_time = torch.cuda.Event(enable_timing=True)
 
         for epoch in range(self.start_epoch, self.nepochs + 1):
-            # 风格化调整阶段，不使用lbs weight计算loss
-            # if epoch in self.GT_lbs_milestones:
-            #     self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
+            if epoch in self.GT_lbs_milestones:
+                self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
 
             if epoch % (self.save_freq * 5) == 0 and epoch != self.start_epoch:
                 self.save_checkpoints(epoch)
