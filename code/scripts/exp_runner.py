@@ -19,8 +19,6 @@ if __name__ == '__main__':
     parser.add_argument('--is_eval', default=False, action="store_true", help='If set, only render images')
     # Training flags
     parser.add_argument('--nepoch', type=int, default=600, help='number of epochs to train for')
-    parser.add_argument('--wandb_workspace', type=str)
-    parser.add_argument('--wandb_tags', type=str, nargs="+", default=[])
     parser.add_argument('--is_continue', default=False, action="store_true", help='If set, indicates continuing from a previous run.')
     # Testing flags
     parser.add_argument('--only_json', default=False, action="store_true", help='If set, do not load images during testing. ')
@@ -35,8 +33,6 @@ if __name__ == '__main__':
                              checkpoint=opt.checkpoint,
                              is_continue=opt.is_continue,
                              load_path=opt.load_path,
-                             wandb_workspace=opt.wandb_workspace,
-                             wandb_tags=opt.wandb_tags,
                              )
         runner.run()
 

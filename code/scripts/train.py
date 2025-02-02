@@ -8,12 +8,12 @@ sys.path.append('./')
 import utils.general as utils
 import utils.plots as plt
 import math
-import wandb
 from functools import partial
 from model.monogaussian_avatar_model import MonogaussianAvatar
 from model.loss import Loss
 import trimesh
 print = partial(print, flush=True)
+from torch.utils.tensorboard import SummaryWriter
 
 
 class TrainRunner():
@@ -31,7 +31,9 @@ class TrainRunner():
         self.methodname = self.conf.get_string('train.methodname')
 
         os.environ['WANDB_DIR'] = os.path.join(self.exps_folder_name)
-        wandb.init(project=kwargs['wandb_workspace'], name=self.subject + '_' + self.methodname, config=self.conf, tags=kwargs['wandb_tags'])
+        tflogsdir = '/root/tf-logs/'+self.subject + '_' + self.methodname+'/'
+        utils.mkdir_ifnotexists(tflogsdir)
+        self.logger = SummaryWriter(tflogsdir)
 
         self.optimize_inputs = self.optimize_expression or self.optimize_pose
         self.expdir = os.path.join(self.exps_folder_name, self.subject, self.methodname)
@@ -125,9 +127,7 @@ class TrainRunner():
             param = []
             if self.optimize_expression:
                 init_expression = torch.cat((self.train_dataset.data["expressions"], torch.randn(self.train_dataset.data["expressions"].shape[0], max(self.model.deformer_network.num_exp - 50, 0)).float()), dim=1)
-                # print(11111)
-                # print(init_expression.size())
-                # print(num_training_frames)
+
                 self.expression = torch.nn.Embedding(num_training_frames, self.model.deformer_network.num_exp, _weight=init_expression, sparse=True).cuda()
                 param += list(self.expression.parameters())
 
@@ -195,12 +195,12 @@ class TrainRunner():
         self.plot_freq = self.conf.get_int('train.plot_freq')
         self.save_freq = self.conf.get_int('train.save_freq', default=1)
         
-        #风格化调整阶段，不使用lbsweight计算loss
-        # self.GT_lbs_milestones = self.conf.get_list('train.GT_lbs_milestones', default=[])
-        # self.GT_lbs_factor = self.conf.get_float('train.GT_lbs_factor', default=0.5)
-        # for acc in self.GT_lbs_milestones:
-        #     if self.start_epoch > acc:
-        #         self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
+        
+        self.GT_lbs_milestones = self.conf.get_list('train.GT_lbs_milestones', default=[])
+        self.GT_lbs_factor = self.conf.get_float('train.GT_lbs_factor', default=0.5)
+        for acc in self.GT_lbs_milestones:
+            if self.start_epoch > acc:
+                self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
         # if len(self.GT_lbs_milestones) > 0 and self.start_epoch >= self.GT_lbs_milestones[-1]:
         #    self.loss.lbs_weight = 0.
 
@@ -352,9 +352,8 @@ class TrainRunner():
         end_time = torch.cuda.Event(enable_timing=True)
 
         for epoch in range(self.start_epoch, self.nepochs + 1):
-            # 风格化调整阶段，不使用lbs weight计算loss
-            # if epoch in self.GT_lbs_milestones:
-            #     self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
+            if epoch in self.GT_lbs_milestones:
+                self.loss.lbs_weight = self.loss.lbs_weight * self.GT_lbs_factor
 
             if epoch % (self.save_freq * 5) == 0 and epoch != self.start_epoch:
                 self.save_checkpoints(epoch)
@@ -514,15 +513,19 @@ class TrainRunner():
                     acc_loss['radius'] = self.model.radius
 
                     acc_loss['lr'] = self.scheduler.get_last_lr()[0]
-                    # # print batch size
+                    ## print batch size
                     acc_loss['batch_size'] = self.batch_size
-                    wandb.log(acc_loss, step=epoch * len(self.train_dataset) + data_index * self.batch_size)
+
+
+                    for key, item in acc_loss.items():
+                        self.logger.add_scalar(key,item,epoch * len(self.train_dataset) + data_index * self.batch_size)
+                    
                     acc_loss = {}
 
             self.scheduler.step()
             end_time.record()
             torch.cuda.synchronize()
-            wandb.log({"timing_epoch": start_time.elapsed_time(end_time)}, step=(epoch+1) * len(self.train_dataset))
+            self.logger.add_scalar("timing_epoch",start_time.elapsed_time(end_time),(epoch+1) * len(self.train_dataset))
             print("Epoch time: {} s".format(start_time.elapsed_time(end_time)/1000))
         self.save_checkpoints(self.nepochs + 1)
 
