@@ -9,7 +9,6 @@ import argparse
 # print(abs_path)
 from scripts.train import TrainRunner
 from scripts.test import TestRunner
-from scripts.train_parallel import TrainRunner_parallel
 
 
 if __name__ == '__main__':

@@ -30,7 +30,6 @@ class TrainRunner():
         self.subject = self.conf.get_string('dataset.subject_name')
         self.methodname = self.conf.get_string('train.methodname')
 
-        os.environ['WANDB_DIR'] = os.path.join(self.exps_folder_name)
         tflogsdir = '/root/tf-logs/'+self.subject + '_' + self.methodname+'/'
         utils.mkdir_ifnotexists(tflogsdir)
         self.logger = SummaryWriter(tflogsdir)
